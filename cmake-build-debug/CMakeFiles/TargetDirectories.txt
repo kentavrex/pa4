@@ -1,0 +1,3 @@
+C:/Users/amirh/CLionProjects/pa4/cmake-build-debug/CMakeFiles/pa4.dir
+C:/Users/amirh/CLionProjects/pa4/cmake-build-debug/CMakeFiles/edit_cache.dir
+C:/Users/amirh/CLionProjects/pa4/cmake-build-debug/CMakeFiles/rebuild_cache.dir
