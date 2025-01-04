@@ -1,98 +1,103 @@
+#include "util.h"
+#include "const.h"
+#include <errno.h>
 #include <unistd.h>
 
-#include "context.h"
-#include "ipc.h"
-#include "pipes.h"
 
-//------------------------------------------------------------------------------
+int send(void *context, local_id destination, const Message *message) {
 
-/** Send a message to the process specified by id.
- *
- * @param self    Any data structure implemented by students to perform I/O
- * @param dst     ID of recepient
- * @param msg     Message to send
- *
- * @return 0 on success, any non-zero value on error
- */
-int send(void * self, local_id dst, const Message * msg) {
-    struct Context *ctx = (struct Context*)self;
-    int64_t msg_len = sizeof(MessageHeader) + msg->s_header.s_payload_len;
-    if (write(accessPipe(&ctx->pipes, (struct PipeDescriptor){ctx->locpid, dst, WRITING}),
-        (const char*)msg, msg_len) < msg_len) return 1;
+    Process *proc_ptr = (Process *) context;
+    Process current_process = *proc_ptr;
+    
+
+    int write_fd = current_process.pipes[current_process.pid][destination].fd[WRITE];
+    //printf("Процесс %d записывает в файловый дескриптор для записи: %d, для чтения: %d\n",
+           //current_process.pid, write_fd, current_process.pipes[current_process.pid][destination].fd[READ]);
+    
+
+    ssize_t bytes_written = write(write_fd, &(message->s_header), sizeof(MessageHeader) + message->s_header.s_payload_len);
+    if (bytes_written < 0) {
+        fprintf(stderr, "Ошибка при записи из процесса %d в процесс %d\n", current_process.pid, destination);
+        return -1;
+    }
+    
+    //printf("Записано сообщение длиной: %d\n", message->s_header.s_payload_len);
     return 0;
 }
+int send_multicast(void *context, const Message *message) {
 
-//------------------------------------------------------------------------------
+    Process *proc_ptr = (Process *) context;
+    Process current_proc = *proc_ptr;
+    
 
-/** Send multicast message.
- *
- * Send msg to all other processes including parrent.
- * Should stop on the first error.
- *
- * @param self    Any data structure implemented by students to perform I/O
- * @param msg     Message to multicast.
- *
- * @return 0 on success, any non-zero value on error
- */
-int send_multicast(void * self, const Message * msg) {
-    struct Context *ctx = (struct Context*)self;
-    int64_t msg_len = sizeof(MessageHeader) + msg->s_header.s_payload_len;
-    for (local_id i = 0; i <= ctx->children; ++i) {
-        if (i != ctx->locpid) {
-            if (write(accessPipe(&ctx->pipes, (struct PipeDescriptor){ctx->locpid, i, WRITING}),
-                (const char*)msg, msg_len) < msg_len) return 1;
+    for (int idx = 0; idx < current_proc.num_process; idx++) {
+        if (idx == current_proc.pid) {
+            continue;
+        }
+        
+
+        if (send(&current_proc, idx, message) < 0) {
+            fprintf(stderr, "Ошибка при мультикаст-отправке из процесса %d к процессу %d\n", current_proc.pid, idx);
+            return -1;
         }
     }
     return 0;
 }
 
-//------------------------------------------------------------------------------
 
-/** Receive a message from the process specified by id.
- *
- * Might block depending on IPC settings.
- *
- * @param self    Any data structure implemented by students to perform I/O
- * @param from    ID of the process to receive message from
- * @param msg     Message structure allocated by the caller
- *
- * @return 0 on success, any non-zero value on error
- */
 int receive(void * self, local_id from, Message * msg) {
-    struct Context *ctx = (struct Context*)self;
-    Descriptor fd = accessPipe(&ctx->pipes, (struct PipeDescriptor){from, ctx->locpid, READING});
-    if ((int64_t)read(fd, msg, sizeof(MessageHeader)) < (int64_t)sizeof(MessageHeader)) return 1;
-    if (msg->s_header.s_magic != MESSAGE_MAGIC) return 2;
-    if ((int64_t)read(fd, msg->s_payload, msg->s_header.s_payload_len) < (int64_t)(msg->s_header.s_payload_len)) return 3;
-    ctx->msg_sender = from;
+    Process process = *(Process *) self;
+    // size_t read(int fd, void *buf, size_t count);
+    int fd =  process.pipes[from][process.pid].fd[READ];
+    if (read(fd, &msg->s_header, sizeof(MessageHeader)) <= 0) {
+        //printf("Error on read header\n");
+        return 1;
+    }
+    if (msg->s_header.s_payload_len == 0) {
+        //printf("Readed message with len %d\n", msg->s_header.s_payload_len);
+        return 0;
+    }
+    if (read(fd, msg->s_payload, msg->s_header.s_payload_len) != msg->s_header.s_payload_len) {
+        // printf("Error on read payload\n");
+        return 1;
+    }
     return 0;
 }
 
-//------------------------------------------------------------------------------
+int receive_any(void *context, Message *msg_buffer) {
 
-/** Receive a message from any process.
- *
- * Receive a message from any process, in case of blocking I/O should be used
- * with extra care to avoid deadlocks.
- *
- * @param self    Any data structure implemented by students to perform I/O
- * @param msg     Message structure allocated by the caller
- *
- * @return 0 on success, any non-zero value on error
- */
-int receive_any(void * self, Message * msg) {
-    struct Context *ctx = (struct Context*)self;
-    for (local_id i = 0; i <= ctx->children; ++i) {
-        if (i != ctx->locpid) {
-            Descriptor fd = accessPipe(&ctx->pipes, (struct PipeDescriptor){i, ctx->locpid, READING});
-            if ((int64_t)read(fd, msg, sizeof(MessageHeader)) < (int64_t)sizeof(MessageHeader)) continue;
-            if (msg->s_header.s_magic != MESSAGE_MAGIC) continue;
-            if ((int64_t)read(fd, msg->s_payload, msg->s_header.s_payload_len) < (int64_t)(msg->s_header.s_payload_len)) continue;
-            ctx->msg_sender = i;
-            return 0;
-        }
+    if (context == NULL || msg_buffer == NULL) {
+        fprintf(stderr, "Ошибка: некорректный контекст или буфер сообщения (NULL значение)\n");
+        return -1;
     }
+
+
+    Process *proc_info = (Process *)context;
+    Process active_proc = *proc_info;
+        for (local_id src_id = 0; src_id < active_proc.num_process; ++src_id) {
+
+            if (src_id == active_proc.pid) {
+                continue;
+            }
+
+
+            int channel_fd = active_proc.pipes[src_id][active_proc.pid].fd[READ];
+
+            if (read(channel_fd, &msg_buffer->s_header, sizeof(MessageHeader))<=0) {
+                //printf("Процесс %d: нет данных от процесса %d, продолжаем ожидание...\n", 
+                       //active_proc.pid, src_id);
+                continue;
+            }
+            else {
+                if (read(channel_fd, msg_buffer->s_payload, msg_buffer->s_header.s_payload_len)<=msg_buffer->s_header.s_payload_len) {
+                return 1;
+            }
+            else {
+            return 0;
+            }
+        }
+      }
+
     return 1;
 }
 
-//------------------------------------------------------------------------------
